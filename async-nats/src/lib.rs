@@ -249,6 +249,9 @@ pub(crate) mod auth_utils;
 pub mod client;
 pub mod connection;
 mod connector;
+//INFO: Diff starts here
+pub use connector::Dialer;
+//INFO: Diff ends here
 mod options;
 
 pub use auth::Auth;
@@ -1005,6 +1008,9 @@ pub async fn connect_with_options<A: ToServerAddrs>(
             reconnect_delay_callback: options.reconnect_delay_callback,
             auth_callback: options.auth_callback,
             max_reconnects: options.max_reconnects,
+            //INFO: Diff starts
+            dialer: options.dialer,
+            //INFO: Diff ends
         },
         events_tx,
         state_tx,
@@ -1550,6 +1556,9 @@ impl ServerAddr {
             && url.scheme() != "tls"
             && url.scheme() != "ws"
             && url.scheme() != "wss"
+        //INFO: Diff starts here
+            && url.scheme() != "ipc"
+        //INFO: Diff ends here
         {
             return Err(std::io::Error::new(
                 ErrorKind::InvalidInput,

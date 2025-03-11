@@ -12,7 +12,7 @@
 // limitations under the License.
 
 use crate::auth::Auth;
-use crate::connector;
+use crate::{connector, Dialer};
 use crate::{Client, ConnectError, Event, ToServerAddrs};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::engine::Engine;
@@ -65,6 +65,9 @@ pub struct ConnectOptions {
     pub(crate) read_buffer_capacity: u16,
     pub(crate) reconnect_delay_callback: Box<dyn Fn(usize) -> Duration + Send + Sync + 'static>,
     pub(crate) auth_callback: Option<CallbackArg1<Vec<u8>, Result<Auth, AuthError>>>,
+    //INFO: Diff starts
+    pub(crate) dialer: Option<Arc<dyn Dialer + Send + Sync>>,
+    //INFO: Diff ends
 }
 
 impl fmt::Debug for ConnectOptions {
@@ -117,6 +120,9 @@ impl Default for ConnectOptions {
             }),
             auth: Default::default(),
             auth_callback: None,
+            //INFO: Diff starts
+            dialer: None,
+            //INFO: Diff ends
         }
     }
 }
@@ -171,6 +177,13 @@ impl ConnectOptions {
     pub async fn connect<A: ToServerAddrs>(self, addrs: A) -> Result<Client, ConnectError> {
         crate::connect_with_options(addrs, self).await
     }
+
+    //INFO: Diff starts
+    pub fn with_dialer(mut self, dialer: Arc<dyn Dialer + Send + Sync>) -> Self {
+        self.dialer = Some(dialer);
+        self
+    }
+    //INFO: Diff ends
 
     /// Creates a builder with a custom auth callback to be used when authenticating against the NATS Server.
     /// Requires an asynchronous function that accepts nonce and returns [Auth].

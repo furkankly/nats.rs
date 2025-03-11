@@ -14,6 +14,7 @@
 use crate::auth::Auth;
 use crate::client::Statistics;
 use crate::connection::Connection;
+use crate::connection::IpcStreamWrapper;
 use crate::connection::State;
 #[cfg(feature = "websockets")]
 use crate::connection::WebSocketAdapter;
@@ -40,8 +41,10 @@ use base64::engine::Engine;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use std::cmp;
+use std::future::Future;
 use std::io;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -49,6 +52,15 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::sleep;
 use tokio_rustls::rustls;
+
+//INFO: Diff starts
+pub trait Dialer {
+    fn dial(
+        &self,
+        addr: String,
+    ) -> Pin<Box<dyn Future<Output = Result<IpcStreamWrapper, io::Error>> + Send + '_>>;
+}
+//INFO: Diff ends
 
 pub(crate) struct ConnectorOptions {
     pub(crate) tls_required: bool,
@@ -67,6 +79,9 @@ pub(crate) struct ConnectorOptions {
     pub(crate) reconnect_delay_callback: Box<dyn Fn(usize) -> Duration + Send + Sync + 'static>,
     pub(crate) auth_callback: Option<CallbackArg1<Vec<u8>, Result<Auth, AuthError>>>,
     pub(crate) max_reconnects: Option<usize>,
+    //INFO: Diff starts
+    pub(crate) dialer: Option<Arc<dyn Dialer + Send + Sync>>,
+    //INFO: Diff ends
 }
 
 /// Maintains a list of servers and establishes connections.
@@ -381,6 +396,27 @@ impl Connector {
                 let con = WebSocketAdapter::new(ws.0);
                 Connection::new(Box::new(con), 0, self.connect_stats.clone())
             }
+            //INFO: Diff starts
+            "ipc" => {
+                let dialer = self.options.dialer.as_ref().ok_or_else(|| {
+                    ConnectError::with_source(
+                        ConnectErrorKind::Io,
+                        "Ipc socket dialer not configured",
+                    )
+                })?;
+
+                let stream = dialer
+                    .dial(socket_addr.to_string())
+                    .await
+                    .map_err(|e| ConnectError::with_source(ConnectErrorKind::Io, e))?;
+
+                Connection::new(
+                    Box::new(stream),
+                    self.options.read_buffer_capacity.into(),
+                    self.connect_stats.clone(),
+                )
+            }
+            //INFO: Diff ends
             _ => {
                 let tcp_stream = tokio::time::timeout(
                     self.options.connection_timeout,

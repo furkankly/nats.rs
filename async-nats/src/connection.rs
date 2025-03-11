@@ -793,6 +793,189 @@ where
     }
 }
 
+//INFO: Diff starts
+pub trait IpcStream: AsyncRead + AsyncWrite + Send + Sync {}
+
+#[cfg(not(windows))]
+pub mod ipc_platform {
+    use std::path::PathBuf;
+
+    use tokio::net::UnixStream;
+
+    use super::*;
+
+    pub type NativeIpcStream = UnixStream;
+
+    impl IpcStream for UnixStream {}
+
+    pub async fn connect_ipc(path: &PathBuf) -> io::Result<NativeIpcStream> {
+        UnixStream::connect(path).await
+    }
+}
+
+#[cfg(windows)]
+pub mod ipc_platform {
+    use std::io;
+    use std::path::PathBuf;
+
+    use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
+
+    use super::*;
+
+    pub type NativeIpcStream = NamedPipeClient;
+
+    impl IpcStream for NamedPipeClient {}
+
+    //INFO: Not used for now because tokio doesnt support UDS for Windows
+    // Check if Windows version supports Unix sockets (Windows 10 build 17063+)
+    // fn use_unix_sockets() -> bool {
+    //     use windows::Win32::System::SystemInformation::RtlGetNtVersionNumbers;
+    //
+    //     let mut major: u32 = 0;
+    //     let mut minor: u32 = 0;
+    //     let mut build: u32 = 0;
+    //
+    //     unsafe {
+    //         RtlGetNtVersionNumbers(&mut major, &mut minor, &mut build);
+    //         // The build number has the patch level in the lower 16 bits
+    //         build &= 0xFFFF;
+    //     }
+    //
+    //     // Return true if Windows 10 build 17063 or higher (where Unix sockets were introduced)
+    //     major > 10 || (major == 10 && build >= 17063)
+    // }
+
+    fn get_username() -> io::Result<String> {
+        use windows::core::PWSTR;
+        use windows::Win32::Foundation::GetLastError;
+        use windows::Win32::System::WindowsProgramming::GetUserNameW;
+
+        // Create a buffer to store the username
+        let mut size: u32 = 0;
+
+        unsafe {
+            // First call to get the required buffer size
+            let _ = GetUserNameW(None, &mut size);
+
+            // Allocate buffer with the correct size
+            let mut buffer = vec![0u16; size as usize];
+            let pwstr = PWSTR::from_raw(buffer.as_mut_ptr());
+
+            // Call GetUserNameW again with the properly sized buffer
+            let result = GetUserNameW(Some(pwstr), &mut size);
+
+            if result.is_ok() {
+                // Convert buffer to a Rust string, removing null terminator
+                buffer.truncate((size - 1) as usize);
+
+                String::from_utf16(&buffer)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+            } else {
+                // Get and convert the Windows error code
+                let error = GetLastError();
+                Err(io::Error::from_raw_os_error(error.0 as i32))
+            }
+        }
+    }
+
+    pub async fn connect_ipc(_path: &PathBuf) -> io::Result<NativeIpcStream> {
+        let username = get_username()?;
+        let pipe_path = format!(r"\\.\pipe\fly-agent-{}", username);
+
+        let pipe_client =
+            tokio::task::spawn_blocking(move || ClientOptions::new().open(&pipe_path)).await??;
+
+        Ok(pipe_client)
+    }
+}
+
+use futures::FutureExt;
+pub use ipc_platform::NativeIpcStream;
+use tokio::io::ReadBuf;
+use tokio::sync::Mutex;
+
+pub struct IpcStreamWrapper {
+    inner: Arc<Mutex<NativeIpcStream>>,
+}
+
+impl IpcStreamWrapper {
+    pub fn new(stream: Arc<Mutex<NativeIpcStream>>) -> Self {
+        tracing::info!("constructing the ipc stream wrapper.");
+        Self { inner: stream }
+    }
+}
+
+impl AsyncRead for IpcStreamWrapper {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let mut guard = futures::ready!(Box::pin(this.inner.lock()).poll_unpin(cx));
+        let result = Pin::new(&mut *guard).poll_read(cx, buf);
+        match &result {
+            Poll::Ready(Ok(())) => {
+                if buf.filled().is_empty() {
+                    tracing::info!("Read EOF");
+                } else {
+                    tracing::info!(
+                        "Read {} bytes: {}",
+                        buf.filled().len(),
+                        String::from_utf8_lossy(buf.filled())
+                    );
+                }
+            }
+            Poll::Ready(Err(e)) => {
+                tracing::info!("Read error: {}", e);
+            }
+            _ => {}
+        }
+        result
+    }
+}
+
+impl AsyncWrite for IpcStreamWrapper {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        let this = self.get_mut();
+        let mut guard = futures::ready!(Box::pin(this.inner.lock()).poll_unpin(cx));
+        let result = Pin::new(&mut *guard).poll_write(cx, buf);
+        match &result {
+            Poll::Ready(Ok(_n)) => {
+                tracing::info!(
+                    "Wrote {} bytes: {}",
+                    buf.len(),
+                    String::from_utf8_lossy(buf)
+                );
+            }
+            Poll::Ready(Err(e)) => {
+                tracing::info!("Write error: {}", e);
+            }
+            _ => {}
+        }
+        result
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+        let this = self.get_mut();
+
+        let mut guard = futures::ready!(Box::pin(this.inner.lock()).poll_unpin(cx));
+        Pin::new(&mut *guard).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+        let this = self.get_mut();
+
+        let mut guard = futures::ready!(Box::pin(this.inner.lock()).poll_unpin(cx));
+        Pin::new(&mut *guard).poll_shutdown(cx)
+    }
+}
+//INFO: Diff ends
+
 #[cfg(test)]
 mod read_op {
     use std::sync::Arc;
