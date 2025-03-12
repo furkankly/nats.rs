@@ -1,10 +1,14 @@
 [package]
-name = "async-nats"
-authors = ["Tomasz Pietrek <tomasz@nats.io>", "Casper Beyer <caspervonb@pm.me>"]
-version = "0.39.0"
+name = "async-nats-flyradar"
+authors = [
+  "Tomasz Pietrek <tomasz@nats.io>",
+  "Casper Beyer <caspervonb@pm.me>",
+  "Furkan Kalaycioglu <furkankalaycioglu12@gmail.com",
+]
+version = "0.39.0-flyradar"
 edition = "2021"
 rust = "1.79.0"
-description = "A async Rust NATS client"
+description = "(patched for flyradar) A async Rust NATS client"
 license = "Apache-2.0"
 documentation = "https://docs.rs/async-nats"
 homepage = "https://github.com/nats-io/nats.rs"
@@ -79,7 +83,7 @@ futures = { version = "0.3.28", default-features = false, features = [
   "async-await",
 ] }
 tracing-subscriber = "0.3"
-async-nats = { path = ".", features = [
+async-nats-flyradar = { path = ".", features = [
   "service",
   "server_2_10",
 ], default-features = false }
